@@ -51,14 +51,14 @@ class UserController extends AbstractController
             $user->setPassword(
                 $passwordHasher->hashPassword(
                     $user, $plainPassword
-                )
+                ) 
             );
 
             # Notre User est correctement setter, on peut envoyer en BDD.
             $entityManager->persist($user);
             $entityManager->flush();
 
-            # Grâce à la méthode addFlash(), vous pouvez stocker des messages dansla session destinés à être affichés en front.
+            # Grâce à la méthode addFlash(), vous pouvez stocker des messages dans la session destinés à être affichés en front.
             #                   label                   message
             $this->addFlash('success', 'Vous êtes inscrit avec succès !');
 
