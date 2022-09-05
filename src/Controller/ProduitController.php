@@ -2,15 +2,19 @@
 
 namespace App\Controller;
 
-use DateTime;
 use App\Entity\Produit;
 use App\Form\ProduitFormType;
+use DateTime;
 use Doctrine\ORM\EntityManagerInterface;
+use Exception;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\File\Exception\FileException;
+use Symfony\Component\HttpFoundation\File\UploadedFile;
+use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Annotation\Route;
 use Symfony\Component\String\Slugger\SluggerInterface;
-use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 
 class ProduitController extends AbstractController
 {
@@ -19,44 +23,155 @@ class ProduitController extends AbstractController
      */
     public function showProduits(EntityManagerInterface $entityManager): Response
     {
-      
-        return $this->render('admin/produit/show_produits.html.twig', [
-            'produits' => $entityManager->getRepository(Produit::class)->findAll()
+        # Grâce à l'entityManager, récupérez tous les produits et envoyez les à la vue twig : show_produits.html.twig
+        return $this->render("admin/produit/show_produits.html.twig", [
+            'produits' => $entityManager->getRepository(Produit::class)->findBy(["deletedAt" => null]),
+            'archived_produits' => $entityManager->getRepository(Produit::class)->findBy(["deletedAt" => null])
         ]);
     }
-    
-     /**
-      * @Route("/ajouter-un-produit", name="create_produit", methods={"GET|POST"})
-      */
-    public function createProduit(Request $request, EntityManagerInterface $entityManager, SluggerInterface $slugger): Response 
-         // un slug en web c est le fait de retirer tous les accents, d une string et tous les espaces on les remplacent par un tiret de 6 (-) et ça met tout en miniscule. c sous la forme d un objet en symfony. 
-         //S.O.L.I.D
+
+    /**
+     * @Route("/ajouter-un-produit", name="create_produit", methods={"GET|POST"})
+     */
+    public function createProduit(Request $request, EntityManagerInterface $entityManager, SluggerInterface $slugger): Response
     {
+        // // un slug en web c est le fait de retirer tous les accents, d une string et tous les espaces on les remplacent par un tiret de 6 (-) et ça met tout en miniscule. c sous la forme d un objet en symfony. 
+         //S.O.L.I.D.
         
         $produit = new Produit();
 
         $form = $this->createForm(ProduitFormType::class, $produit)
             ->handleRequest($request);
 
-            if($form->isSubmitted() && $form->isValid()) {
-                $produit->setCreatedAt(new DateTime());
-                $produit->setUpdatedAt(new DateTime());
-    
-                # Récupération du fichier dans le formulaire. Ce sera un objet de type UploadedFile.
-               // /** @var UploadedFile $photo */ //
-                $photo = $form->get('photo')->getData();
-                
-                
+        if($form->isSubmitted() && $form->isValid()) {
 
+            $produit->setCreatedAt(new DateTime());
+            $produit->setUpdatedAt(new DateTime());
+
+            # Récupération du fichier dans le formulaire. Ce sera un objet de type UploadedFile.
+           /** @var UploadedFile $photo */ 
+            $photo = $form->get('photo')->getData();
+
+            if ($photo) {
+                // Méthode privée créée par nous-même pour réutiliser la partie du code identique aux actions create() et update()
+                $this->handleFile($produit, $photo, $slugger);
+            } # end if($photo)
+
+            $entityManager->persist($produit);
+            $entityManager->flush();
+
+            $this->addFlash('success', 'Le produit est en ligne avec succès ! ');
+            return $this->redirectToRoute('show_produits');
+        } # end if($form)
+
+        return $this->render("admin/form/form_produit.html.twig", [
+            'form' => $form->createView()
+        ]);
+    }
+
+    /**
+     * @Route("/modifier-un-produit_{id}", name="update_produit", methods={"GET|POST"})
+     */
+    public function updateProduit(Produit $produit, EntityManagerInterface $entityManager, SluggerInterface $slugger, Request $request): Response
+    {
+        $originalPhoto = $produit->getPhoto();
+
+        $form = $this->createForm(ProduitFormType::class, $produit, [
+            'photo' => $originalPhoto
+        ])->handleRequest($request);
+
+        if($form->isSubmitted() && $form->isValid()) {
+
+            $produit->setUpdatedAt(new DateTime());
+
+            /** @var UploadedFile $photo */ 
+            $photo = $form->get('photo')->getData();
+
+            if ($photo === null) {
+               $this->handleFile($produit, $photo, $slugger);
+            } else {
+                $produit->setPhoto($originalPhoto);
             }
 
-     return $this->render("admin/form/form_produit.html.twig", [
-          'form' => $form->createView()
-     ]);
+            $entityManager->persist($produit);
+            $entityManager->flush();
 
+            $this->addFlash('success', 'Le produit est en ligne avec succès ! ');
+            return $this->redirectToRoute('show_produits');
+        } # end if($form)
+
+        return $this->render('admin/form/form_produit.html.twig', [
+            'form' => $form->createView(),
+            'produit' => $produit
+        ]);
+    } # end function update()
+
+    /**
+     * @Route("/archiver-un-produit_{id}", name="soft_delete_produit", methods={"GET"})
+     */
+    public function softDeleteProduit(Produit $produit, EntityManagerInterface $entityManager): RedirectResponse
+    {
+        $produit->setDeletedAt(new DateTime());
+
+        $entityManager->persist($produit);
+        $entityManager->flush();
+
+        $this->addFlash('success', "L'archivage du produit ". $produit->getTitle(). " a été effectué avec succès");
+        return $this->redirectToRoute('show_produits');
+    }
+
+    /**
+     * @Route("/supprimer-un-produit_{id}", name="hard_delete_produit", methods={"GET"})
+     */
+    public function hardDeleteProduit(Produit $produit, EntityManagerInterface $entityManager): RedirectResponse
+    {
+        $entityManager->remove($produit);
+        $entityManager->flush();
+
+        $this->addFlash("success", "Le produit a bien été supprimé de la base");
+        return $this->redirectToRoute("show_produits");
+    }
+
+    /**
+     * @Route("/restaurer-un-produit_{id}", name="restore_produit", methods={"GET"})
+     */
+    public function restoreProduit(Produit $produit, EntityManagerInterface $entityManager): RedirectResponse
+    {
+        $produit->setDeletedAt(null);
+
+        $entityManager->persist($produit);
+        $entityManager->flush();
+
+        $this->addFlash("success", "Le produit a bien été restauré en ligne");
+        return $this->redirectToRoute("show_produits");
     }
 
 
+    /////////////////////////////////////////// METHODE PRIVÉE //////////////////////////////////////
 
-}
 
+    private function handleFile(Produit $produit, UploadedFile $photo, SluggerInterface $slugger)
+    {
+        # 1 Déconstruire le nom du fichier
+        $extension = '.' . $photo->guessExtension();
+
+        # 2 Variabiliser tous les éléments du nouveau nom de fichier après sécurisation
+        # Le slug assainit le titre du produit (il retire les accents, les espaces, les majuscules)
+        $safeFilename = $slugger->slug($produit->getTitle());
+
+        # 3 Reconstruit du nom du fichier
+        $newFilename = $safeFilename . '_' . uniqid() . $extension;
+
+        # 4 Déplacement du fichier temporaire dans un dossier permanent dans notre projet.
+        #try/catch s'utilise lorsqu'une méthode lance (throws) une erreur (Exception)
+        try {
+            $photo->move($this->getParameter('uploads_dir'), $newFilename);
+            $produit->setPhoto($newFilename);
+        } catch (FileException $exception) {
+            $this->addFlash('warning', "Une erreur est survenue pendant l'upload de votre fichier :( Veuillez recommencer.");
+            # On redirige le user et notre script s'arretera là si il rentre dans le catch()
+            throw new Exception("Une erreur est survenue pendant l'upload de votre fichier :( Veuillez recommencer.");
+        }# end catch()
+    }
+
+} # end class
